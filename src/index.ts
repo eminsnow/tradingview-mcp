@@ -91,8 +91,10 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     {
       name: "create_alert",
       description:
-        "Create a simple price-condition alert (cross, cross_up, cross_down, greater, less). " +
-        "For Pine-indicator composite alerts (VD-RALLY, Long Capitulation Setup, etc.) use clone_alert instead.",
+        "Create a price-condition alert. Supports both single-condition (condition+value) and " +
+        "multi-condition (conditions array — TV's 'Add condition' AND-semantics: all triggers " +
+        "must be true simultaneously). For Pine-indicator composite alerts (VD-RALLY, Long " +
+        "Capitulation Setup, etc.) use clone_alert instead.",
       inputSchema: {
         type: "object",
         properties: {
@@ -100,9 +102,38 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           condition: {
             type: "string",
             enum: ["cross", "cross_up", "cross_down", "greater", "less"],
-            description: "Price condition type",
+            description:
+              "Single-condition shorthand (pair with 'value'). Mutually exclusive with 'conditions'.",
           },
-          value: { type: "number", description: "Threshold value" },
+          value: {
+            type: "number",
+            description: "Threshold for single-condition mode (pair with 'condition').",
+          },
+          conditions: {
+            type: "array",
+            description:
+              "Multi-condition AND form. Each entry is a separate trigger; alert fires only when ALL are simultaneously true. Mirrors TV UI's 'Add condition' button. Mutually exclusive with single 'condition'/'value'.",
+            items: {
+              type: "object",
+              properties: {
+                condition: {
+                  type: "string",
+                  enum: ["cross", "cross_up", "cross_down", "greater", "less"],
+                },
+                value: { type: "number" },
+                resolution: {
+                  type: "string",
+                  description:
+                    "Override the alert-level resolution for this condition only (e.g. trigger on a 4H cross while alert lives on 1H chart).",
+                },
+                frequency: {
+                  type: "string",
+                  enum: ["on_first_fire", "once_per_bar", "once_per_bar_close", "every_time"],
+                },
+              },
+              required: ["condition", "value"],
+            },
+          },
           resolution: {
             type: "string",
             description: "Bar resolution: '1', '5', '15', '60', '240', 'D', 'W'. Default '60' (1H).",
@@ -116,11 +147,11 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           frequency: {
             type: "string",
             enum: ["on_first_fire", "once_per_bar", "once_per_bar_close", "every_time"],
-            description: "How often to fire. Default on_first_fire.",
+            description: "Default fire frequency (per-condition override available via 'conditions'). Default on_first_fire.",
           },
           webhook_url: { type: "string", description: "Optional webhook URL to POST on fire" },
         },
-        required: ["symbol", "condition", "value"],
+        required: ["symbol"],
       },
     },
     {
@@ -513,17 +544,31 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
       }
       case "create_alert": {
+        const simpleCondition = z.enum([
+          "cross", "cross_up", "cross_down", "greater", "less",
+        ]);
+        const freqEnum = z.enum([
+          "on_first_fire", "once_per_bar", "once_per_bar_close", "every_time",
+        ]);
         const parsed = z.object({
           symbol: z.string(),
-          condition: z.enum(["cross", "cross_up", "cross_down", "greater", "less"]),
-          value: z.number(),
+          condition: simpleCondition.optional(),
+          value: z.number().optional(),
+          conditions: z
+            .array(
+              z.object({
+                condition: simpleCondition,
+                value: z.number(),
+                resolution: z.string().optional(),
+                frequency: freqEnum.optional(),
+              })
+            )
+            .optional(),
           resolution: z.string().optional(),
           message: z.string().optional(),
           name: z.string().nullable().optional(),
           expiration: z.string().nullable().optional(),
-          frequency: z
-            .enum(["on_first_fire", "once_per_bar", "once_per_bar_close", "every_time"])
-            .optional(),
+          frequency: freqEnum.optional(),
           webhook_url: z.string().nullable().optional(),
         }).parse(args);
         const result = await alerts.createAlert({

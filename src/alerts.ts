@@ -287,10 +287,25 @@ export async function getAlertRaw(id: string): Promise<AlertRecord> {
 
 // ─── Create ──────────────────────────────────────────────────────────────────
 
+export type SimpleConditionType = "cross" | "cross_up" | "cross_down" | "greater" | "less";
+
+/** One trigger within a multi-condition alert. All conditions must be true for the alert to fire (AND semantics, mirrors TV UI's "Add condition" button). */
+export interface SimpleCondition {
+  condition: SimpleConditionType;
+  value: number;
+  /** Override the alert-level resolution for this condition only (e.g. trigger on a 4H cross while the alert lives on a 1H chart). Defaults to the alert resolution. */
+  resolution?: string;
+  /** Override frequency for this condition only. Defaults to the alert frequency. */
+  frequency?: "on_first_fire" | "once_per_bar" | "once_per_bar_close" | "every_time";
+}
+
 export interface CreateAlertParams {
   symbol: string;                         // e.g. "BYBIT:BTCUSDT.P"
-  condition: "cross" | "cross_up" | "cross_down" | "greater" | "less";
-  value: number;                          // price level / threshold
+  /** Single-condition shorthand (mutually exclusive with `conditions`). */
+  condition?: SimpleConditionType;
+  value?: number;
+  /** Multi-condition (AND) form. Each entry becomes a separate trigger; the alert fires only when all are simultaneously true. Mirrors TV UI's "Add condition" button. */
+  conditions?: SimpleCondition[];
   resolution?: string;                    // "1", "5", "15", "60", "240", "D", "W" — default "60"
   message?: string;
   name?: string | null;
@@ -311,11 +326,47 @@ export interface CreateAlertParams {
 export async function createAlert(p: CreateAlertParams): Promise<Alert> {
   const resolution = p.resolution ?? "60";
   const symbolExt = p.extendedSymbol ?? buildExtendedSymbol(p.symbol);
+  const defaultFreq = p.frequency ?? "on_first_fire";
+
+  // Normalize to a unified list. Accept either:
+  //   { condition, value }                — single trigger (back-compat)
+  //   { conditions: [{condition, value}, …] } — multi-trigger (AND)
+  let triggers: SimpleCondition[];
+  if (p.conditions && p.conditions.length > 0) {
+    if (p.condition !== undefined || p.value !== undefined) {
+      throw new Error(
+        "create_alert: pass either { condition, value } OR { conditions: [...] }, not both"
+      );
+    }
+    triggers = p.conditions;
+  } else {
+    if (p.condition === undefined || p.value === undefined) {
+      throw new Error(
+        "create_alert: must provide either { condition, value } or { conditions: [...] }"
+      );
+    }
+    triggers = [{ condition: p.condition, value: p.value }];
+  }
+
+  const conditionPayload = triggers.map((t) => ({
+    type: t.condition,
+    frequency: t.frequency ?? defaultFreq,
+    series: [
+      { type: "barset" },
+      { type: "value", value: t.value },
+    ],
+    resolution: t.resolution ?? resolution,
+  }));
+
+  const defaultMessage = triggers
+    .map((t) => `${t.condition} ${t.value}`)
+    .join(" AND ");
+
   const payload = {
     payload: {
       symbol: symbolExt,
       resolution,
-      message: p.message ?? `${p.symbol} ${p.condition} ${p.value}`,
+      message: p.message ?? `${p.symbol} ${defaultMessage}`,
       sound_file: p.notifications?.sound === false ? null : "alert/fired",
       sound_duration: 0,
       popup: p.notifications?.popup ?? true,
@@ -326,17 +377,7 @@ export async function createAlert(p: CreateAlertParams): Promise<Alert> {
       mobile_push: p.notifications?.mobile_push ?? true,
       web_hook: p.web_hook ?? null,
       name: p.name ?? null,
-      conditions: [
-        {
-          type: p.condition,
-          frequency: p.frequency ?? "on_first_fire",
-          series: [
-            { type: "barset" },
-            { type: "value", value: p.value },
-          ],
-          resolution,
-        },
-      ],
+      conditions: conditionPayload,
       active: p.active ?? true,
       ignore_warnings: true,
     },
