@@ -264,11 +264,32 @@ async function loginHeadless(username: string, password: string): Promise<Cookie
 
 async function waitForSessionCookie(context: BrowserContext, timeoutMs: number): Promise<CookieJar> {
   const deadline = Date.now() + timeoutMs;
+  let warnedPreAuth = false;
   while (Date.now() < deadline) {
     const cookies = await context.cookies("https://www.tradingview.com");
     const sessionid = cookies.find((c) => c.name === "sessionid");
     if (sessionid) {
-      return extractCookies(context);
+      // The sessionid cookie alone is NOT a definitive auth signal — TradingView
+      // sets it after username+password but BEFORE 2FA / device verification.
+      // Verify the session is fully authenticated by fetching the homepage with
+      // these cookies and checking for the `is-authenticated` HTML class.
+      // If we close the browser before 2FA completes, the session is invalid.
+      const cookieHeader = cookies.map((c) => `${c.name}=${c.value}`).join("; ");
+      try {
+        const res = await fetch("https://www.tradingview.com/", {
+          headers: { "User-Agent": UA, Cookie: cookieHeader },
+        });
+        const html = await res.text();
+        if (html.includes("is-authenticated") && !html.includes("is-not-authenticated")) {
+          return extractCookies(context);
+        }
+        if (!warnedPreAuth) {
+          console.error("[auth] sessionid present but session not fully authenticated yet — waiting for 2FA / device verification to complete...");
+          warnedPreAuth = true;
+        }
+      } catch {
+        // Network hiccup — fall through and retry next iteration
+      }
     }
     await new Promise((r) => setTimeout(r, 1000));
   }
