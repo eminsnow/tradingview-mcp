@@ -8,6 +8,6 @@ dist/
 .DS_Store
 
 # Reverse-engineering probe output (per-session captures, can be large)
-alert_capture.log
+alert_capture*.log
 
 # Note: scripts/ is tracked (probe helpers live there).
