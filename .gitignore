@@ -3,4 +3,11 @@ dist/
 .env
 .tv_session.json
 *.js.map
-scripts/
+
+# macOS metadata
+.DS_Store
+
+# Reverse-engineering probe output (per-session captures, can be large)
+alert_capture.log
+
+# Note: scripts/ is tracked (probe helpers live there).
