@@ -2,7 +2,12 @@ export interface Alert {
   id: string;
   name: string;
   symbol: string;
+  /** Plain "EXCHANGE:TICKER" extracted from TV's extended-symbol envelope */
+  symbol_plain?: string;
   condition: string;
+  /** Matches TV's UI tabs in the alerts panel */
+  type?: "price" | "technicals" | "watchlist";
+  resolution?: string;
   price?: number;
   active: boolean;
   expiration?: string;

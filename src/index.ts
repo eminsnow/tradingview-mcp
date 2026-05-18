@@ -31,8 +31,53 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     // ── Alerts ──────────────────────────────────────────────────────────────
     {
       name: "list_alerts",
-      description: "List all active TradingView price alerts",
-      inputSchema: { type: "object", properties: {}, required: [] },
+      description:
+        "List TradingView alerts with optional filters (active state, symbol, resolution, type). " +
+        "Mirrors TV's UI filter panel: 'Active only' / 'Inactive only' / 'All', current symbol, " +
+        "current time interval, alert type (price/technicals/watchlist). " +
+        "Default returns ALL alerts capped at 200 — use filters to narrow large lists.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          active: {
+            type: "boolean",
+            description: "true = active only, false = inactive only, omit = all",
+          },
+          symbol: {
+            type: "string",
+            description: "Filter by symbol (e.g. 'BYBIT:BTCUSDT.P'). See symbol_match for fuzzy.",
+          },
+          symbol_match: {
+            type: "string",
+            enum: ["exact", "contains"],
+            description: "How to compare 'symbol' — exact (default) or substring",
+          },
+          resolution: {
+            type: "string",
+            description: "Filter by exact bar resolution: '1','5','15','60','240','D','W',etc.",
+          },
+          type: {
+            type: "string",
+            enum: ["price", "technicals", "watchlist", "all"],
+            description:
+              "TV UI tab classification — price (cross/cross_up/etc.), technicals (Pine indicator alerts), watchlist (alerts on watchlist symbol)",
+          },
+          name_contains: {
+            type: "string",
+            description: "Case-insensitive substring match against name + message",
+          },
+          limit: {
+            type: "number",
+            description: "Cap result count (default 200; 0 = no cap, use carefully — full list is ~280KB)",
+          },
+          minimal: {
+            type: "boolean",
+            description:
+              "Return slim record (id+name+symbol+condition+type+resolution+active+last_fired_at) — recommended when listing 50+ alerts",
+          },
+        },
+        required: [],
+      },
     },
     {
       name: "get_alert",
@@ -41,6 +86,106 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         type: "object",
         properties: { id: { type: "string", description: "Alert ID" } },
         required: ["id"],
+      },
+    },
+    {
+      name: "create_alert",
+      description:
+        "Create a simple price-condition alert (cross, cross_up, cross_down, greater, less). " +
+        "For Pine-indicator composite alerts (VD-RALLY, Long Capitulation Setup, etc.) use clone_alert instead.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          symbol: { type: "string", description: "EXCHANGE:TICKER e.g. BYBIT:BTCUSDT.P" },
+          condition: {
+            type: "string",
+            enum: ["cross", "cross_up", "cross_down", "greater", "less"],
+            description: "Price condition type",
+          },
+          value: { type: "number", description: "Threshold value" },
+          resolution: {
+            type: "string",
+            description: "Bar resolution: '1', '5', '15', '60', '240', 'D', 'W'. Default '60' (1H).",
+          },
+          message: { type: "string", description: "Alert message text" },
+          name: { type: "string", description: "Optional display name" },
+          expiration: {
+            type: "string",
+            description: "ISO 8601 expiry, e.g. 2026-06-30T23:59:59Z. null/omitted = no expiry.",
+          },
+          frequency: {
+            type: "string",
+            enum: ["on_first_fire", "once_per_bar", "once_per_bar_close", "every_time"],
+            description: "How often to fire. Default on_first_fire.",
+          },
+          webhook_url: { type: "string", description: "Optional webhook URL to POST on fire" },
+        },
+        required: ["symbol", "condition", "value"],
+      },
+    },
+    {
+      name: "clone_alert",
+      description:
+        "Clone an existing alert (Pine indicator composite or simple price) to one or more new " +
+        "symbols, reusing its full condition spec (study reference + all Pine inputs, plot_N " +
+        "mapping, etc.). Best way to fan out a VD-RALLY composite alarm across a watchlist.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          source_id: { type: "string", description: "ID of the source alert to clone" },
+          target_symbols: {
+            type: "array",
+            items: { type: "string" },
+            description: "List of EXCHANGE:TICKER symbols to create the cloned alert on",
+          },
+          message_override: {
+            type: "string",
+            description: "Replace source message. Leave empty to keep source message verbatim (recommended if it uses {{ticker}} placeholders).",
+          },
+          resolution_override: {
+            type: "string",
+            description: "Optional resolution override, e.g. '240' for 4H",
+          },
+          active: { type: "boolean", description: "Start active (default true)" },
+        },
+        required: ["source_id", "target_symbols"],
+      },
+    },
+    {
+      name: "delete_alert",
+      description: "Delete one or more alerts by ID (batch).",
+      inputSchema: {
+        type: "object",
+        properties: {
+          ids: {
+            type: "array",
+            items: { type: "string" },
+            description: "Alert IDs to delete",
+          },
+        },
+        required: ["ids"],
+      },
+    },
+    {
+      name: "stop_alert",
+      description: "Deactivate (pause) one or more alerts without deleting them.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          ids: { type: "array", items: { type: "string" } },
+        },
+        required: ["ids"],
+      },
+    },
+    {
+      name: "restart_alert",
+      description: "Re-activate one or more previously stopped alerts.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          ids: { type: "array", items: { type: "string" } },
+        },
+        required: ["ids"],
       },
     },
 
@@ -349,13 +494,75 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
       // ── Alerts ─────────────────────────────────────────────────────────────
       case "list_alerts": {
-        const result = await alerts.listAlerts();
+        const parsed = z.object({
+          active: z.boolean().optional(),
+          symbol: z.string().optional(),
+          symbol_match: z.enum(["exact", "contains"]).optional(),
+          resolution: z.string().optional(),
+          type: z.enum(["price", "technicals", "watchlist", "all"]).optional(),
+          name_contains: z.string().optional(),
+          limit: z.number().optional(),
+          minimal: z.boolean().optional(),
+        }).parse(args ?? {});
+        const result = await alerts.listAlerts(parsed);
         return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
       }
       case "get_alert": {
         const { id } = z.object({ id: z.string() }).parse(args);
         const result = await alerts.getAlert(id);
         return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+      }
+      case "create_alert": {
+        const parsed = z.object({
+          symbol: z.string(),
+          condition: z.enum(["cross", "cross_up", "cross_down", "greater", "less"]),
+          value: z.number(),
+          resolution: z.string().optional(),
+          message: z.string().optional(),
+          name: z.string().nullable().optional(),
+          expiration: z.string().nullable().optional(),
+          frequency: z
+            .enum(["on_first_fire", "once_per_bar", "once_per_bar_close", "every_time"])
+            .optional(),
+          webhook_url: z.string().nullable().optional(),
+        }).parse(args);
+        const result = await alerts.createAlert({
+          ...parsed,
+          web_hook: parsed.webhook_url ?? null,
+        });
+        return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+      }
+      case "clone_alert": {
+        const parsed = z.object({
+          source_id: z.string(),
+          target_symbols: z.array(z.string()).min(1),
+          message_override: z.string().optional(),
+          resolution_override: z.string().optional(),
+          active: z.boolean().optional(),
+        }).parse(args);
+        const result = await alerts.cloneAlert({
+          source_id: parsed.source_id,
+          target_symbols: parsed.target_symbols,
+          messageOverride: parsed.message_override,
+          resolutionOverride: parsed.resolution_override,
+          active: parsed.active,
+        });
+        return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+      }
+      case "delete_alert": {
+        const { ids } = z.object({ ids: z.array(z.string()).min(1) }).parse(args);
+        await alerts.deleteAlerts(ids);
+        return { content: [{ type: "text", text: `Deleted ${ids.length} alert(s).` }] };
+      }
+      case "stop_alert": {
+        const { ids } = z.object({ ids: z.array(z.string()).min(1) }).parse(args);
+        await alerts.stopAlerts(ids);
+        return { content: [{ type: "text", text: `Stopped ${ids.length} alert(s).` }] };
+      }
+      case "restart_alert": {
+        const { ids } = z.object({ ids: z.array(z.string()).min(1) }).parse(args);
+        await alerts.restartAlerts(ids);
+        return { content: [{ type: "text", text: `Restarted ${ids.length} alert(s).` }] };
       }
 
       // ── Watchlists ──────────────────────────────────────────────────────────
