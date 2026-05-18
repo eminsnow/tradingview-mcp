@@ -293,7 +293,12 @@ export type SimpleConditionType = "cross" | "cross_up" | "cross_down" | "greater
 export interface SimpleCondition {
   condition: SimpleConditionType;
   value: number;
-  /** Override the alert-level resolution for this condition only (e.g. trigger on a 4H cross while the alert lives on a 1H chart). Defaults to the alert resolution. */
+  /**
+   * Sent to TV as the condition's `resolution` field, but in practice TV
+   * normalizes all conditions of a price-cross-style alert to 1m polling
+   * (`cross_interval: true`) regardless of what we pass. Kept for forward
+   * compatibility but typically omitted — the alert-level resolution rules.
+   */
   resolution?: string;
   /** Override frequency for this condition only. Defaults to the alert frequency. */
   frequency?: "on_first_fire" | "once_per_bar" | "once_per_bar_close" | "every_time";

@@ -124,7 +124,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
                 resolution: {
                   type: "string",
                   description:
-                    "Override the alert-level resolution for this condition only (e.g. trigger on a 4H cross while alert lives on 1H chart).",
+                    "Per-condition resolution. NOTE: TV typically normalizes price-cross alerts to 1m polling regardless of what's sent here; the alert-level resolution is what actually matters in practice. Kept for forward compatibility.",
                 },
                 frequency: {
                   type: "string",
