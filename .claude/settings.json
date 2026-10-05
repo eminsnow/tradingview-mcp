@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(codex *)",
+      "Bash(agy *)",
+      "Bash(grok *)"
+    ]
+  }
+}
